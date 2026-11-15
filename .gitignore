@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+data/
+frontend/config.js
+.DS_Store
+.obsidian/workspace*.json
+
+# Personal interview-prep notes (Obsidian): kept local, not published
+vault/

@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoEstate · Madrid</title>
+  <style>
+    :root {
+      --surface: #fcfcfb; --ink: #1f1f1e; --ink-2: #5c5c58; --ink-3: #8a8a85; --line: #e4e3df;
+      --accent: #1c5cab; --warning: #fab219;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--surface); }
+    #map { position: absolute; inset: 0; }
+    #panel {
+      position: absolute; top: 16px; left: 16px; width: 320px; max-height: calc(100% - 32px); overflow: auto;
+      background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px;
+      box-shadow: 0 2px 12px rgb(0 0 0 / .08);
+    }
+    h1 { font-size: 16px; margin: 0 0 2px; }
+    .sub { margin: 0 0 12px; color: var(--ink-2); font-size: 12px; }
+    .toggle { display: flex; gap: 4px; margin-bottom: 14px; }
+    .toggle button {
+      flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent;
+      color: var(--ink-2); font: inherit; cursor: pointer;
+    }
+    .toggle button[aria-pressed="true"] { border-color: var(--accent); color: var(--ink); font-weight: 600; }
+    .legend-title { font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+    .legend { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
+    .legend span { height: 10px; border-radius: 2px; }
+    .legend-labels { display: grid; grid-template-columns: repeat(5, 1fr); font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+    .keys { margin: 12px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--ink-2); }
+    .keys li { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .swatch { width: 18px; height: 12px; border-radius: 2px; flex: none; }
+    .note { font-size: 11px; color: var(--ink-3); margin: 12px 0 0; }
+    details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+    summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+    th { color: var(--ink-2); font-weight: 500; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    #tooltip {
+      position: absolute; pointer-events: none; display: none; min-width: 180px; padding: 8px 10px;
+      background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-size: 12px;
+      box-shadow: 0 2px 10px rgb(0 0 0 / .12);
+    }
+    #tooltip .big { font-size: 16px; font-weight: 600; }
+    #tooltip .muted { color: var(--ink-2); }
+    #tooltip .warn { margin-top: 4px; color: var(--ink); }
+    #error { display: none; position: absolute; bottom: 16px; left: 16px; right: 16px; padding: 10px; background: #fff3f3; border: 1px solid #d03b3b; border-radius: 8px; }
+    @media (max-width: 640px) { #panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; max-height: 45%; } }
+  </style>
+</head>
+<body>
+  <div id="map" aria-label="Mapa de precios de la vivienda en Madrid"></div>
+
+  <aside id="panel">
+    <h1>Precio de la vivienda · Madrid</h1>
+    <p class="sub">Mediana de €/m² en anuncios de venta, ajustada al 4.º trimestre de 2018</p>
+
+    <div class="toggle" role="group" aria-label="Unidad espacial">
+      <button type="button" data-view="hex" aria-pressed="true">Hexágonos</button>
+      <button type="button" data-view="zones" aria-pressed="false">Barrios</button>
+    </div>
+
+    <div class="legend-title">€/m² (mediana)</div>
+    <div class="legend" id="legend"></div>
+    <div class="legend-labels" id="legend-labels"></div>
+
+    <ul class="keys">
+      <li><span class="swatch" style="background:#5598e7;opacity:.35"></span>Pocos anuncios (3–4): valor suavizado hacia la zona</li>
+      <li><span class="swatch" style="border:2px solid var(--warning)"></span>⚠ Revisar: muy distinto de sus vecinas</li>
+      <li><span class="swatch" style="background:#d9d9d6"></span>Sin datos suficientes</li>
+    </ul>
+
+    <p class="note">Hexágonos H3 en dos niveles: resolución 7 (síntesis) con zoom bajo y resolución 9
+      (detalle) al acercarse. Son precios <em>pedidos</em>, no de cierre. Datos: idealista18 (ODbL).</p>
+
+    <details id="ranking">
+      <summary>Tabla de barrios</summary>
+      <table>
+        <thead><tr><th>Barrio</th><th class="num">€/m²</th><th class="num">Anuncios</th></tr></thead>
+        <tbody id="ranking-body"><tr><td colspan="3">Cargando…</td></tr></tbody>
+      </table>
+    </details>
+  </aside>
+
+  <div id="tooltip" role="status" aria-live="polite"></div>
+  <div id="error" role="alert"></div>
+
+  <!-- Optional: frontend/config.js sets window.GEOSTATE = { mapboxToken, martinUrl } -->
+  <script src="config.js"></script>
+  <script>
+    const CONFIG = Object.assign(
+      { martinUrl: "http://localhost:3000", mapboxToken: "" },
+      window.GEOSTATE || {}
+    );
+
+    // Sequential single-hue ramp (validated: monotone lightness, visible step gaps, single hue).
+    // Breaks: round numbers near the data's quantiles, with the top classes wide enough to
+    // separate the centre (Salamanca/Chamberí reach 6.000–8.500 €/m²).
+    const BREAKS = [2000, 3000, 4500, 6000];
+    const COLORS = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b"];
+    const NO_DATA = "#d9d9d6";
+    const WARNING = "#fab219";
+    const FINE_MINZOOM = 12.5;
+
+    const fmt = (v) => (v == null ? "—" : Math.round(v).toLocaleString("es-ES"));
+    const priceColor = ["step", ["get", "median_m2"], COLORS[0],
+      BREAKS[0], COLORS[1], BREAKS[1], COLORS[2], BREAKS[2], COLORS[3], BREAKS[3], COLORS[4]];
+
+    function loadScript(src, css) {
+      return new Promise((resolve, reject) => {
+        const link = document.createElement("link");
+        link.rel = "stylesheet"; link.href = css; document.head.appendChild(link);
+        const s = document.createElement("script");
+        s.src = src; s.onload = resolve; s.onerror = () => reject(new Error("no se pudo cargar " + src));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function loadLibrary() {
+      if (CONFIG.mapboxToken) {
+        await loadScript("https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js",
+                         "https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css");
+        window.mapboxgl.accessToken = CONFIG.mapboxToken;
+        return { gl: window.mapboxgl, style: "mapbox://styles/mapbox/light-v11" };
+      }
+      await loadScript("https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js",
+                       "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css");
+      return { gl: window.maplibregl, style: "https://tiles.versatiles.org/assets/styles/gray/style.json" };
+    }
+
+    function renderLegend() {
+      document.getElementById("legend").innerHTML =
+        COLORS.map((c) => `<span style="background:${c}"></span>`).join("");
+      const k = (v) => (v / 1000).toLocaleString("es-ES");
+      const labels = [`< ${k(BREAKS[0])} mil`,
+        ...BREAKS.slice(0, -1).map((b, i) => `${k(b)}–${k(BREAKS[i + 1])} mil`),
+        `≥ ${k(BREAKS.at(-1))} mil`];
+      document.getElementById("legend-labels").innerHTML = labels.map((l) => `<span>${l}</span>`).join("");
+    }
+
+    function addLayers(map) {
+      const tiles = (name) => ({ type: "vector", tiles: [`${CONFIG.martinUrl}/${name}/{z}/{x}/{y}`], minzoom: 8, maxzoom: 16 });
+      map.addSource("hex_coarse", tiles("hex_coarse"));
+      map.addSource("hex_fine", tiles("hex_fine"));
+      map.addSource("zones", tiles("zone_prices"));
+
+      map.addLayer({ id: "hex-coarse", type: "fill", source: "hex_coarse", "source-layer": "hex_coarse",
+        maxzoom: FINE_MINZOOM, paint: { "fill-color": priceColor, "fill-opacity": 0.8 } });
+      map.addLayer({ id: "hex-fine", type: "fill", source: "hex_fine", "source-layer": "hex_fine",
+        minzoom: FINE_MINZOOM, paint: {
+          "fill-color": priceColor,
+          "fill-opacity": ["match", ["get", "confidence"], "low", 0.35, "medium", 0.6, 0.8] } });
+      // surface-coloured gap between adjacent cells
+      for (const [id, src] of [["hex-coarse-gap", "hex_coarse"], ["hex-fine-gap", "hex_fine"]]) {
+        map.addLayer({ id, type: "line", source: src, "source-layer": src,
+          ...(src === "hex_fine" ? { minzoom: FINE_MINZOOM } : { maxzoom: FINE_MINZOOM }),
+          paint: { "line-color": "#fcfcfb", "line-width": 1 } });
+      }
+      map.addLayer({ id: "hex-fine-outlier", type: "line", source: "hex_fine", "source-layer": "hex_fine",
+        minzoom: FINE_MINZOOM, filter: ["==", ["get", "outlier_vs_neighbors"], true],
+        paint: { "line-color": WARNING, "line-width": 2.5 } });
+
+      map.addLayer({ id: "zones-fill", type: "fill", source: "zones", "source-layer": "zone_prices",
+        layout: { visibility: "none" },
+        paint: { "fill-color": ["case", ["has", "median_m2"], priceColor, NO_DATA], "fill-opacity": 0.8 } });
+      map.addLayer({ id: "zones-line", type: "line", source: "zones", "source-layer": "zone_prices",
+        paint: { "line-color": "#fcfcfb", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 14, 2] } });
+    }
+
+    function setView(map, view) {
+      const hex = view === "hex";
+      for (const id of ["hex-coarse", "hex-fine", "hex-coarse-gap", "hex-fine-gap", "hex-fine-outlier"]) {
+        map.setLayoutProperty(id, "visibility", hex ? "visible" : "none");
+      }
+      map.setLayoutProperty("zones-fill", "visibility", hex ? "none" : "visible");
+      map.setPaintProperty("zones-line", "line-color", hex ? "rgba(31,31,30,0.35)" : "#fcfcfb");
+      document.querySelectorAll(".toggle button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+    }
+
+    function tooltipHtml(f) {
+      const p = f.properties;
+      if (f.layer.id === "zones-fill") {
+        const rooms = [["1 hab.", p.median_m2_1room], ["2 hab.", p.median_m2_2room],
+                       ["3 hab.", p.median_m2_3room], ["4+ hab.", p.median_m2_4plus]]
+          .filter(([, v]) => v != null).map(([k, v]) => `${k}: ${fmt(v)} €/m²`).join("<br>");
+        return `<div><strong>${escapeHtml(p.zone_name)}</strong></div>` +
+          (p.median_m2 == null ? `<div class="muted">Pocos anuncios (${p.n})</div>` :
+           `<div class="big">${fmt(p.median_m2)} €/m²</div>
+            <div class="muted">P25–P75: ${fmt(p.p25_m2)} – ${fmt(p.p75_m2)} · ${fmt(p.n)} anuncios</div>
+            <div class="muted" style="margin-top:4px">${rooms}</div>`);
+      }
+      const fine = f.layer.id === "hex-fine";
+      const conf = { low: "baja", medium: "media", high: "alta" }[p.confidence];
+      return `<div class="big">${fmt(p.median_m2)} €/m²</div>
+        <div class="muted">P25–P75: ${fmt(p.p25_m2)} – ${fmt(p.p75_m2)} · ${fmt(p.n)} anuncios</div>
+        ${fine ? `<div class="muted">Confianza ${conf}${p.median_m2 !== p.raw_median_m2 ? ` · sin suavizar: ${fmt(p.raw_median_m2)} €/m²` : ""}</div>` : `<div class="muted">Celda de síntesis (H3 res 7)</div>`}
+        ${p.outlier_vs_neighbors ? `<div class="warn">⚠ Revisar: muy distinto de las celdas vecinas</div>` : ""}`;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function bindTooltip(map) {
+      const tip = document.getElementById("tooltip");
+      const layers = ["hex-fine", "hex-coarse", "zones-fill"];
+      map.on("mousemove", (e) => {
+        const f = map.queryRenderedFeatures(e.point, { layers: layers.filter((l) => map.getLayer(l)) })[0];
+        map.getCanvas().style.cursor = f ? "pointer" : "";
+        if (!f) { tip.style.display = "none"; return; }
+        tip.innerHTML = tooltipHtml(f);
+        tip.style.display = "block";
+        const x = Math.min(e.point.x + 14, window.innerWidth - tip.offsetWidth - 8);
+        const y = Math.min(e.point.y + 14, window.innerHeight - tip.offsetHeight - 8);
+        tip.style.left = x + "px"; tip.style.top = y + "px";
+      });
+      map.on("mouseout", () => { tip.style.display = "none"; });
+    }
+
+    // Table view (accessibility + quick ranking), built from the zone tiles already loaded.
+    const zonesSeen = new Map();
+    function updateRanking(map) {
+      for (const f of map.querySourceFeatures("zones", { sourceLayer: "zone_prices" })) {
+        zonesSeen.set(f.properties.zone_id, f.properties);
+      }
+      const rows = [...zonesSeen.values()].sort((a, b) => (b.median_m2 ?? -1) - (a.median_m2 ?? -1));
+      if (!rows.length) return;
+      document.getElementById("ranking-body").innerHTML = rows.map((p) =>
+        `<tr><td>${escapeHtml(p.zone_name)}</td><td class="num">${fmt(p.median_m2)}</td><td class="num">${fmt(p.n)}</td></tr>`).join("");
+    }
+
+    async function main() {
+      renderLegend();
+      const { gl, style } = await loadLibrary();
+      const map = new gl.Map({ container: "map", style, center: [-3.69, 40.42], zoom: 10.8, minZoom: 9, maxZoom: 16 });
+      map.addControl(new gl.NavigationControl({ showCompass: false }), "top-right");
+      map.on("load", () => {
+        addLayers(map);
+        bindTooltip(map);
+        document.querySelectorAll(".toggle button").forEach((b) => b.addEventListener("click", () => setView(map, b.dataset.view)));
+        setView(map, "hex");
+      });
+      map.on("idle", () => updateRanking(map));
+      map.on("error", (e) => {
+        if (String(e.error?.message || "").includes("Failed to fetch")) {
+          const el = document.getElementById("error");
+          el.textContent = `No se pueden cargar los tiles desde ${CONFIG.martinUrl}. ¿Está levantado Martin (make up) y ejecutado el pipeline (make pipeline)?`;
+          el.style.display = "block";
+        }
+      });
+      window.__map = map;  // for debugging in the console
+    }
+    main().catch((err) => {
+      const el = document.getElementById("error");
+      el.textContent = "Error al iniciar el mapa: " + err.message;
+      el.style.display = "block";
+    });
+  </script>
+</body>
+</html>
