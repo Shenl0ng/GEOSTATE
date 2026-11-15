@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GEOSTATE_", env_file=".env", extra="ignore")
 
     pg_dsn: str = "postgresql://geostate:geostate@localhost:5433/geostate"
+
+    # ClickHouse: full listing history for large-scale analytics (time series)
+    ch_host: str = "localhost"
+    ch_port: int = 8123
+    ch_user: str = "geostate"
+    ch_password: str = "geostate"
+    ch_database: str = "geostate"
     data_dir: Path = Path("data/raw")
     source_base_url: str = "https://github.com/paezha/idealista18/raw/master/data"
 

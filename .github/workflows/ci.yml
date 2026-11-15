@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: lint · types · unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
+
+  pipeline-e2e:
+    name: end-to-end pipeline (PostGIS + ClickHouse)
+    runs-on: ubuntu-24.04
+    needs: checks
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: geostate
+          POSTGRES_PASSWORD: geostate
+          POSTGRES_DB: geostate
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U geostate -d geostate"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8
+        env:
+          CLICKHOUSE_USER: geostate
+          CLICKHOUSE_PASSWORD: geostate
+          CLICKHOUSE_DB: geostate
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports: ["8123:8123"]
+        options: >-
+          --health-cmd "clickhouse-client --user geostate --password geostate -q 'SELECT 1'"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+      - run: uv sync --frozen --no-dev
+      - name: Run the full pipeline on Madrid (twice, to prove idempotency)
+        run: |
+          uv run geostate run --city Madrid > run1.json
+          uv run geostate run --city Madrid > run2.json
+      - name: Check results
+        run: |
+          python3 - <<'EOF'
+          import json
+          r1, r2 = (json.load(open(f)) for f in ("run1.json", "run2.json"))
+          core, marts, ch = r2["core"], r2["marts"], r2["clickhouse"]
+          assert core["core_listings"] > 70_000, core
+          assert core["outside_city_ratio"] < 0.05, core
+          assert marts["hex_fine"] > 1_000 and marts["zone_coverage"] >= 0.8, marts
+          assert ch["rows"] == core["core_listings"], (ch, core)  # re-run did not duplicate
+          assert r1["core"]["core_listings"] == core["core_listings"], "re-run changed results"
+          print("ok:", core["core_listings"], "listings,", marts["hex_fine"], "fine cells")
+          EOF
+      - name: Airflow DAG parses
+        run: |
+          docker build -q -f docker/airflow.Dockerfile -t geostate-airflow:ci .
+          docker run --rm -v "$PWD/dags:/opt/airflow/dags:ro" \
+            -e AIRFLOW__CORE__LOAD_EXAMPLES=False geostate-airflow:ci \
+            bash -c "airflow db migrate >/dev/null && airflow dags list-import-errors | grep -q 'No data found'"

@@ -1,4 +1,4 @@
-.PHONY: install up down reset pipeline test lint fmt logs
+.PHONY: install up down reset pipeline trends dag test lint fmt logs
 
 CITY ?= Madrid
 
@@ -16,6 +16,13 @@ reset:  ## drop the database volume
 
 pipeline:
 	uv run geostate run --city $(CITY)
+
+trends:
+	uv run geostate trends --city $(CITY)
+
+dag:  ## trigger the Airflow DAG
+	docker compose exec airflow airflow dags unpause listings_pipeline
+	docker compose exec airflow airflow dags trigger listings_pipeline
 
 test:
 	uv run pytest -q

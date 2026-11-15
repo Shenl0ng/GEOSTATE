@@ -8,11 +8,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import h3
 
-from geostate import extract, load, quality
+from geostate import clickhouse, extract, load, quality
 from geostate.config import Settings
 from geostate.db import connect, read_sql, run_sql_file
 from geostate.spatial import assign_h3
@@ -108,11 +109,25 @@ def record_run(city: str, started_at: dt.datetime, stats: Stats, settings: Setti
         )
 
 
+def sync_clickhouse(city: str, settings: Settings) -> Stats:
+    """Copy clean listings to ClickHouse for time-series analytics (full refresh per city)."""
+    return clickhouse.sync_city(city, settings)
+
+
+# Ordered steps. Each one is idempotent and can run as its own orchestrator task.
+STEPS: dict[str, Callable[[str, Settings], Stats]] = {
+    "stage": stage,
+    "core": build_core,
+    "marts": build_marts,
+    "clickhouse": sync_clickhouse,
+}
+
+
 def run(city: str, settings: Settings) -> Stats:
     started_at = dt.datetime.now(dt.UTC)
     init_db(settings)
     stats: Stats = {"city": city}
-    for name, step in (("stage", stage), ("core", build_core), ("marts", build_marts)):
+    for name, step in STEPS.items():
         log.info("step %s: start", name)
         stats[name] = step(city, settings)
         log.info("step %s: done %s", name, stats[name])

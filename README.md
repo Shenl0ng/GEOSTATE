@@ -9,11 +9,13 @@ deduplication, geolocation quality control, temporal adjustment, a two-level hon
 with smoothing in sparse areas, and automated checks against neighbouring cells.
 
 ```
-idealista18 listings ─► stage (clean, dedupe, H3) ─► PostGIS core (spatial join, geo QA,
-  (Madrid, 2018)         Python                      time index)  EPSG:25830
-                                                          │
-                     map (MapLibre / Mapbox GL) ◄─ Martin ◄─ marts: hex_fine (H3 r9),
-                                                   (MVT)        hex_coarse (H3 r7), zone_prices
+                    Airflow DAG  listings_pipeline  (one task per step, retries, quality gates)
+                    ┌──────────────────┬──────────────────────┬──────────────────┬───────────────┐
+idealista18 ──► stage                ► core                 ► marts            ► clickhouse
+(Madrid 2018)   clean, dedupe, H3      spatial join, geo QA,  H3 r9/r7, zones,   history +
+                → PostGIS staging      time index (25830)     checks (atomic)    aggregates
+                                                                    │                 │
+                               map (Mapbox GL) ◄── Martin (MVT) ◄───┘     trends per zone
 ```
 
 ![Fine honeycomb (H3 r9) over central Madrid, with tooltip and a cell flagged for review](docs/img/honeycomb-fine.png)
@@ -33,6 +35,10 @@ idealista18 listings ─► stage (clean, dedupe, H3) ─► PostGIS core (spati
 Quarterly time index (city median €/m², latest quarter = 1.0): Q1 ×1.087, Q2 ×1.047,
 Q3 ×1.022. Asking prices rose ~8.7% during 2018. Most expensive neighbourhood: Recoletos
 (7,718 €/m²); cheapest: San Cristóbal (1,203 €/m²).
+
+Airflow: both runs green; the manual run waited in the queue (grey) because `max_active_runs=1`.
+
+![Airflow DAG listings_pipeline: 4 tasks, 2 successful runs](docs/img/airflow.png)
 
 | Coarse honeycomb (H3 r7) | Neighbourhoods |
 |---|---|
@@ -61,12 +67,16 @@ Requirements: Docker, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 make install   # Python deps (uv)
-make up        # PostGIS + Martin + frontend
-make pipeline  # download data, run the pipeline for Madrid, print run stats
-open http://localhost:8080
+make up        # PostGIS, ClickHouse, Airflow, Martin, frontend
+make pipeline  # run all steps from the terminal (or trigger the DAG in Airflow)
+open http://localhost:8080   # map
+open http://localhost:8081   # Airflow UI (local, no login)
+make trends    # price change per neighbourhood, from ClickHouse
 ```
 
-`make test` runs the unit tests, `make lint` runs ruff + mypy.
+`make test` runs the unit tests, `make lint` runs ruff + mypy. CI (GitHub Actions) runs those
+plus the full pipeline twice against real PostGIS and ClickHouse services, to prove idempotency,
+and checks that the Airflow DAG imports.
 
 Optional: put a Mapbox token in `frontend/config.js` to render with Mapbox GL JS;
 without it the map uses MapLibre GL JS (same API) with an OpenStreetMap basemap.
@@ -79,22 +89,30 @@ without it the map uses MapLibre GL JS (same API) with an OpenStreetMap basemap.
 - **Idempotent steps**: every step deletes and rewrites its city, so retries and re-runs are safe.
 - **Atomic publish**: marts and their quality gates run in one transaction; if a gate fails,
   the transaction rolls back and the map keeps serving the last good version.
-- **Orchestrator-ready**: `stage`, `build_core` and `build_marts` exchange data through the
-  database, not memory, so each one can be its own Airflow task.
+- **Orchestration**: each step is a CLI command (`geostate stage|core|marts|clickhouse`) that
+  exchanges data through the database, not memory. The Airflow DAG only orchestrates: one task
+  per step, the package lives in its own virtualenv inside the Airflow image (no dependency
+  clashes), infrastructure errors are retried with backoff, and quality-gate failures
+  (exit code 2) fail fast without retry. `max_active_runs=1` because runs rewrite the same tables.
+- **ClickHouse**: flat, enriched copy of clean listings (`MergeTree`, partitioned by
+  city and month) plus an `AggregatingMergeTree` fed by a materialized view (quarterly median
+  per zone). Re-runs drop the city's partitions in both tables first: a materialized view
+  only reacts to inserts, so stale aggregates would otherwise be double counted.
 
 ## Layout
 
 ```
-src/geostate/   extract · transform · spatial · load · quality · pipeline · cli
-src/geostate/sql/   schema.sql · core.sql · marts.sql
+src/geostate/       extract · transform · spatial · load · quality · clickhouse · pipeline · cli
+src/geostate/sql/   schema.sql · core.sql · marts.sql · clickhouse_*.sql
+dags/               Airflow DAG (orchestration only)
 tests/unit/     pure-function tests (no database needed)
-docker/         Martin config
+docker/         Airflow image, Martin config, Postgres init
 frontend/       single-page map
 ```
 
 ## Roadmap
 
 - [x] Phase 1: listings → PostGIS → H3 honeycomb → vector tiles → map
-- [ ] Phase 2: Airflow DAG, ClickHouse for price history, CI
+- [x] Phase 2: Airflow DAG, ClickHouse for price history, CI
 - [ ] Phase 3: Kubernetes (kind + Helm), KubernetesPodOperator
 - [ ] Street-level prices (OpenStreetMap streets), Barcelona and Valencia
