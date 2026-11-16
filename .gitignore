@@ -12,3 +12,4 @@ frontend/config.js
 
 # Personal interview-prep notes (Obsidian): kept local, not published
 vault/
+.kube-airflow/

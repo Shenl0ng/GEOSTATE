@@ -1,0 +1,57 @@
+# Run the whole pipeline once, without Airflow: `kubectl -n geostate create -f k8s/job-pipeline.yaml`
+# Steps run in order as init containers (each must succeed before the next starts); the last
+# step is the main container. Resources come from measured peak memory per step
+# (stage ~540 MiB: R file parsing + pandas; the other steps < 200 MiB, the work is in SQL).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: geostate-pipeline-
+  namespace: geostate
+  labels: { app: geostate }
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: { app: geostate, run: job }
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      volumes:
+        - name: data
+          emptyDir: {}
+      initContainers:
+        - name: stage
+          image: geostate:local
+          imagePullPolicy: IfNotPresent
+          args: ["stage", "--city", "Madrid"]
+          envFrom: &env
+            - configMapRef: { name: geostate-config }
+            - secretRef: { name: geostate-db }
+          volumeMounts: [{ name: data, mountPath: /data }]
+          resources:
+            requests: { cpu: 250m, memory: 640Mi }
+            limits: { memory: 768Mi }
+        - name: core
+          image: geostate:local
+          imagePullPolicy: IfNotPresent
+          args: ["core", "--city", "Madrid"]
+          envFrom: *env
+          resources: &small
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 320Mi }
+        - name: marts
+          image: geostate:local
+          imagePullPolicy: IfNotPresent
+          args: ["marts", "--city", "Madrid"]
+          envFrom: *env
+          resources: *small
+      containers:
+        - name: clickhouse
+          image: geostate:local
+          imagePullPolicy: IfNotPresent
+          args: ["clickhouse", "--city", "Madrid"]
+          envFrom: *env
+          resources: *small

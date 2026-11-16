@@ -1,0 +1,43 @@
+# Namespace, non-secret configuration and the external databases.
+#
+# The databases are NOT run inside the cluster: like managed services in production
+# (RDS / Cloud SQL / ClickHouse Cloud), they live outside and the cluster reaches them through
+# Services without a selector. scripts/k8s-up.sh points their EndpointSlices at the
+# docker-compose containers. Secrets (DSN, passwords) are created by that script, never committed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: geostate
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: geostate-config
+  namespace: geostate
+data:
+  GEOSTATE_CH_HOST: clickhouse
+  GEOSTATE_CH_PORT: "8123"
+  GEOSTATE_CH_USER: geostate
+  GEOSTATE_CH_DATABASE: geostate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgis
+  namespace: geostate
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: geostate
+spec:
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123

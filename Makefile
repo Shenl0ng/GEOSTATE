@@ -1,4 +1,4 @@
-.PHONY: install up down reset pipeline trends dag test lint fmt logs
+.PHONY: install up down reset pipeline trends dag k8s-up k8s-job k8s-down test lint fmt logs
 
 CITY ?= Madrid
 
@@ -23,6 +23,15 @@ trends:
 dag:  ## trigger the Airflow DAG
 	docker compose exec airflow airflow dags unpause listings_pipeline
 	docker compose exec airflow airflow dags trigger listings_pipeline
+
+k8s-up:  ## kind cluster + image + wiring to the databases (idempotent)
+	./scripts/k8s-up.sh
+
+k8s-job:  ## run the whole pipeline once as a Kubernetes Job
+	kubectl -n geostate create -f k8s/job-pipeline.yaml
+
+k8s-down:
+	kind delete cluster --name geostate
 
 test:
 	uv run pytest -q

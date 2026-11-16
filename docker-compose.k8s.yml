@@ -1,0 +1,19 @@
+# Overlay used with the local kind cluster (make k8s-up):
+#   docker compose -f docker-compose.yml -f docker-compose.k8s.yml up -d
+# - the databases join the `kind` network so pods reach them (Services without selector);
+# - Airflow joins it too and gets a kubeconfig to launch pods (KubernetesPodOperator).
+services:
+  postgis:
+    networks: [default, kind]
+  clickhouse:
+    networks: [default, kind]
+  airflow:
+    networks: [default, kind]
+    environment:
+      GEOSTATE_KUBECONFIG: /opt/geostate/kube/config
+    volumes:
+      - ./.kube-airflow:/opt/geostate/kube:ro
+
+networks:
+  kind:
+    external: true

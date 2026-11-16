@@ -78,6 +78,14 @@ make trends    # price change per neighbourhood, from ClickHouse
 plus the full pipeline twice against real PostGIS and ClickHouse services, to prove idempotency,
 and checks that the Airflow DAG imports.
 
+### On Kubernetes (local, kind)
+
+```bash
+make k8s-up    # kind cluster, geostate image, Services pointing at the databases
+make k8s-job   # whole pipeline once, as a Job (steps as init containers)
+# or, in Airflow, enable the DAG listings_pipeline_k8s: one pod per step
+```
+
 Optional: put a Mapbox token in `frontend/config.js` to render with Mapbox GL JS;
 without it the map uses MapLibre GL JS (same API) with an OpenStreetMap basemap.
 
@@ -94,6 +102,13 @@ without it the map uses MapLibre GL JS (same API) with an OpenStreetMap basemap.
   per step, the package lives in its own virtualenv inside the Airflow image (no dependency
   clashes), infrastructure errors are retried with backoff, and quality-gate failures
   (exit code 2) fail fast without retry. `max_active_runs=1` because runs rewrite the same tables.
+- **Kubernetes**: a standalone image (`docker/geostate.Dockerfile`: multi-stage, non-root,
+  entrypoint `geostate`) runs each step in its own pod via `KubernetesPodOperator`. CPU/memory
+  requests come from the measured peak memory of each step (`stage` ~540 MiB parsing the R file,
+  the rest < 200 MiB because the work is in SQL). The databases stay outside the cluster, as
+  managed services would in production; pods reach them through Services without a selector.
+  Config in a ConfigMap, credentials in a Secret created at deploy time (never committed).
+  A small operator subclass keeps the error policy: exit code 2 from a pod = no retry.
 - **ClickHouse**: flat, enriched copy of clean listings (`MergeTree`, partitioned by
   city and month) plus an `AggregatingMergeTree` fed by a materialized view (quarterly median
   per zone). Re-runs drop the city's partitions in both tables first: a materialized view
@@ -104,9 +119,10 @@ without it the map uses MapLibre GL JS (same API) with an OpenStreetMap basemap.
 ```
 src/geostate/       extract · transform · spatial · load · quality · clickhouse · pipeline · cli
 src/geostate/sql/   schema.sql · core.sql · marts.sql · clickhouse_*.sql
-dags/               Airflow DAG (orchestration only)
+dags/               Airflow DAGs: local venv and Kubernetes pods (orchestration only)
+k8s/ · scripts/     kind config, manifests (namespace, config, Services, Job), setup script
 tests/unit/     pure-function tests (no database needed)
-docker/         Airflow image, Martin config, Postgres init
+docker/         pipeline image, Airflow image, Martin config, Postgres init
 frontend/       single-page map
 ```
 
@@ -114,5 +130,6 @@ frontend/       single-page map
 
 - [x] Phase 1: listings → PostGIS → H3 honeycomb → vector tiles → map
 - [x] Phase 2: Airflow DAG, ClickHouse for price history, CI
-- [ ] Phase 3: Kubernetes (kind + Helm), KubernetesPodOperator
+- [x] Phase 3: Kubernetes (kind), one pod per step with KubernetesPodOperator
+- [ ] Airflow itself on Kubernetes (official Helm chart), image registry + CI deploy
 - [ ] Street-level prices (OpenStreetMap streets), Barcelona and Valencia
