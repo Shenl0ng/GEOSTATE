@@ -3,10 +3,11 @@
 End-to-end geospatial pipeline that turns raw real-estate **listings** into a **price honeycomb**
 and **neighbourhood prices**, served as **vector tiles** on an interactive map.
 
-It is a small-scale replication of the approach described in RealAdvisor's public
+It is a personal learning project, inspired by the approach described in RealAdvisor's public
 [price methodology](https://realadvisor.es/es/blog/metodologia-precio-vivienda): listing
 deduplication, geolocation quality control, temporal adjustment, a two-level honeycomb
 with smoothing in sparse areas, and automated checks against neighbouring cells.
+It is not affiliated with RealAdvisor and does not reproduce its system.
 
 ```
                     Airflow DAG  listings_pipeline  (one task per step, retries, quality gates)
@@ -43,6 +44,43 @@ Airflow: both runs green; the manual run waited in the queue (grey) because `max
 | Coarse honeycomb (H3 r7) | Neighbourhoods |
 |---|---|
 | ![](docs/img/honeycomb-coarse.png) | ![](docs/img/zones.png) |
+
+## Price model and market segments
+
+Offline analyses on the same clean listings the map uses (`make model`, `make segments`,
+no database needed, ~30 s each).
+
+**Can a model value a flat better than the honeycomb?** Gradient boosting
+(scikit-learn `HistGradientBoostingRegressor`) on log €/m² with 33 features: size, rooms,
+amenities, floor, cadastral data, location. It is evaluated like a backtest: **trained on
+Q1–Q3 2018, tested on Q4** (31,418 flats it never saw; any flat already seen in training is
+dropped). The baseline is the honeycomb used as a valuation: the training median €/m² of
+the flat's H3 r9 cell (r7, then city, when the cell has fewer than 5 listings).
+
+| Q4 2018, 31,418 flats | Median error | Mean error | Within ±10 % | Within ±20 % |
+|---|---|---|---|---|
+| Honeycomb cell median (baseline) | 14.1 % | 18.7 % | 37 % | 66 % |
+| **Gradient boosting** | **10.6 %** | **14.0 %** | **47 %** | **78 %** |
+
+- Location dominates (latitude, distance to the Castellana axis and to the centre), then size,
+  floor and lift (permutation importance).
+- Both undervalue Q4 by about 4 %: asking prices kept rising and the model only knows earlier
+  quarters. In production it would be retrained each quarter or corrected with the time index.
+- These are asking prices, not sale prices: the model predicts what a flat would be listed at.
+
+**What kinds of market are there?** k-means on 1,269 H3 cells (≥ 10 listings each, 73,916
+listings) described by price, size, build year, amenities and distance to the centre,
+standardised. k = 4 has the best silhouette score (0.36, k tested 3–7).
+
+| Segment | Cells | Listings | €/m² | Built | Lift | Parking | Pool | Centre |
+|---|---|---|---|---|---|---|---|---|
+| Older outer districts | 589 | 30,504 | 2,050 | 1969 | 50 % | 9 % | 0 % | 5.7 km |
+| New developments on the edge (66 % new build) | 42 | 1,665 | 2,689 | 2006 | 100 % | 92 % | 93 % | 10.5 km |
+| Residential estates with pool and parking | 324 | 7,925 | 3,591 | 2001 | 100 % | 80 % | 81 % | 7.8 km |
+| Central, older buildings | 314 | 33,822 | 4,576 | 1961 | 92 % | 15 % | 2 % | 2.5 km |
+
+Segments show what a price map hides: an estate with a pool 8 km out and a flat in the centre
+are different products for different buyers, even when their €/m² is not far apart.
 
 ## Data
 
@@ -118,6 +156,7 @@ without it the map uses MapLibre GL JS (same API) with an OpenStreetMap basemap.
 
 ```
 src/geostate/       extract · transform · spatial · load · quality · clickhouse · pipeline · cli
+                    price_model · segments (offline analyses)
 src/geostate/sql/   schema.sql · core.sql · marts.sql · clickhouse_*.sql
 dags/               Airflow DAGs: local venv and Kubernetes pods (orchestration only)
 k8s/ · scripts/     kind config, manifests (namespace, config, Services, Job), setup script
@@ -131,5 +170,6 @@ frontend/       single-page map
 - [x] Phase 1: listings → PostGIS → H3 honeycomb → vector tiles → map
 - [x] Phase 2: Airflow DAG, ClickHouse for price history, CI
 - [x] Phase 3: Kubernetes (kind), one pod per step with KubernetesPodOperator
+- [x] Price model vs. honeycomb baseline (time-based test), k-means market segments
 - [ ] Airflow itself on Kubernetes (official Helm chart), image registry + CI deploy
 - [ ] Street-level prices (OpenStreetMap streets), Barcelona and Valencia

@@ -1,4 +1,4 @@
-.PHONY: install up down reset pipeline trends dag k8s-up k8s-job k8s-down test lint fmt logs
+.PHONY: install up down reset pipeline trends model segments dag k8s-up k8s-job k8s-down test lint fmt logs
 
 CITY ?= Madrid
 
@@ -19,6 +19,12 @@ pipeline:
 
 trends:
 	uv run geostate trends --city $(CITY)
+
+model:  ## price model vs. honeycomb baseline (offline, no database needed)
+	uv run geostate model --city $(CITY)
+
+segments:  ## k-means market segments of H3 cells (offline)
+	uv run geostate segments --city $(CITY)
 
 dag:  ## trigger the Airflow DAG
 	docker compose exec airflow airflow dags unpause listings_pipeline
